@@ -1,4 +1,6 @@
-# Criação de uma Instância EC2 com Docker, Docker Compose, Prometheus, Grafana e Promsim
+# Criação Stack de monitoramento
+
+## Criação de uma Instância EC2 com Docker, Docker Compose, Prometheus, Grafana e Promsim
 
 Neste artigo, vamos descrever o passo a passo para criar uma instância EC2 na AWS, configurar Docker e Docker Compose, e implementar Prometheus e Grafana para monitoramento. Utilizaremos o Promsim para gerar métricas de simulação. Este processo será automatizado utilizando um template CloudFormation.
 
