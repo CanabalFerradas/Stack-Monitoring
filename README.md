@@ -12,14 +12,14 @@ O primeiro passo é criar um template CloudFormation que define todos os recurso
 
 ```yaml
 AWSTemplateFormatVersion: '2010-09-09'
-Description: Template para criar uma instância EC2 com Docker, Docker Compose, Prometheus, Grafana e Promsim
+Description: Template para criar uma instância EC2 com Docker, Docker Compose, Prometheus, Grafana e Alertmanager
 
 Resources:
   MySecurityGroup:
     Type: 'AWS::EC2::SecurityGroup'
     Properties: 
       GroupDescription: 'Security group for monitoring tools'
-      VpcId: 'vpc-00c4068c76195eef9' # Substitua pelo ID do seu VPC
+      VpcId: 'vpc-00c4068c76195eef9'
       SecurityGroupIngress: 
         - IpProtocol: 'tcp'
           FromPort: 8080
@@ -28,6 +28,10 @@ Resources:
         - IpProtocol: 'tcp'
           FromPort: 9090
           ToPort: 9090
+          CidrIp: '0.0.0.0/0'
+        - IpProtocol: 'tcp'
+          FromPort: 9093
+          ToPort: 9093
           CidrIp: '0.0.0.0/0'
         - IpProtocol: 'tcp'
           FromPort: 22
@@ -43,17 +47,14 @@ Resources:
     Properties: 
       InstanceType: 't2.large'
       ImageId: 'ami-00beae93a2d981137' # ID da AMI do Amazon Linux 2 fornecido
-      SubnetId: 'subnet-0d2c38ca49ba41812' # Substitua pelo ID da sua subnet
+      SubnetId: 'subnet-0d2c38ca49ba41812'
       SecurityGroupIds: 
         - !Ref MySecurityGroup
       KeyName: 'vockey' # Atualize para o nome do seu par de chaves
       UserData: 
         Fn::Base64: !Sub |
           #!/bin/bash
-          # Definir o arquivo de log
           LOGFILE="/tmp/install_docker_compose.log"
-
-          # Definir o diretório home do usuário ec2-user
           USER_HOME="/home/ec2-user"
 
           # Instalar Docker
@@ -75,17 +76,12 @@ Resources:
           sudo chmod +x /usr/local/bin/docker-compose
           echo "Docker Compose instalado."
 
-          # Criar diretórios e ajustar permissões para Prometheus
-          echo "Criando diretórios e ajustando permissões para Prometheus..."
-          mkdir -p /path/to/prometheus/data
-          sudo chown -R 65534:65534 /path/to/prometheus/data
-          echo "Diretórios para Prometheus criados e permissões ajustadas."
-
-          # Criar diretórios e ajustando permissões para Grafana
-          echo "Criando diretórios e ajustando permissões para Grafana..."
-          mkdir -p /path/to/grafana/data
-          sudo chown -R 472:472 /path/to/grafana/data
-          echo "Diretórios para Grafana criados e permissões ajustadas."
+          # Criar diretórios e ajustar permissões para Prometheus, Alertmanager e Grafana
+          echo "Criando diretórios e ajustando permissões para Prometheus, Alertmanager e Grafana..."
+          sudo mkdir -p /data/prometheus /data/alertmanager /data/grafana
+          sudo chown -R 65534:65534 /data/prometheus /data/alertmanager
+          sudo chown -R 472:472 /data/grafana
+          echo "Diretórios para Prometheus, Alertmanager e Grafana criados e permissões ajustadas."
 
           # Obter o IP público da instância
           echo "Obtendo o IP público da instância..."
@@ -106,9 +102,19 @@ Resources:
                 - "9090:9090"
               volumes:
                 - ./prometheus.yml:/etc/prometheus/prometheus.yml
-                - /path/to/prometheus/data:/prometheus
+                - /data/prometheus:/prometheus
+                - ./alert_rules.yml:/etc/prometheus/alert_rules.yml
               depends_on:
                 - promsim
+                - alertmanager
+              deploy:
+                resources:
+                  limits:
+                    memory: 1536M
+                    cpus: "1.0"
+                  reservations:
+                    memory: 1024M
+                    cpus: "0.5"
 
             grafana:
               image: grafana/grafana:latest
@@ -116,7 +122,15 @@ Resources:
               ports:
                 - "3000:3000"
               volumes:
-                - /path/to/grafana/data:/var/lib/grafana
+                - /data/grafana:/var/lib/grafana
+              deploy:
+                resources:
+                  limits:
+                    memory: 1536M
+                    cpus: "1.0"
+                  reservations:
+                    memory: 1024M
+                    cpus: "0.5"
 
             promsim:
               image: docker.io/dmitsh/promsim:0.3
@@ -125,6 +139,33 @@ Resources:
                 - "8080:8080"
               networks:
                 - monitoring
+              deploy:
+                resources:
+                  limits:
+                    memory: 1536M
+                    cpus: "1.0"
+                  reservations:
+                    memory: 1024M
+                    cpus: "0.5"
+
+            alertmanager:
+              image: prom/alertmanager:latest
+              container_name: alertmanager
+              ports:
+                - "9093:9093"
+              volumes:
+                - ./alertmanager.yml:/etc/alertmanager/alertmanager.yml
+                - /data/alertmanager:/alertmanager
+              networks:
+                - monitoring
+              deploy:
+                resources:
+                  limits:
+                    memory: 512M
+                    cpus: "0.5"
+                  reservations:
+                    memory: 256M
+                    cpus: "0.25"
 
           networks:
             monitoring:
@@ -139,6 +180,15 @@ Resources:
             scrape_interval: 15s
             evaluation_interval: 15s
 
+          rule_files:
+            - "/etc/prometheus/alert_rules.yml"
+
+          alerting:
+            alertmanagers:
+            - static_configs:
+              - targets:
+                - "alertmanager:9093"
+
           scrape_configs:
             - job_name: "promsim"
               static_configs:
@@ -146,9 +196,58 @@ Resources:
           EOF
           echo "Arquivo prometheus.yml criado."
 
+          # Criar o arquivo alertmanager.yml
+          echo "Criando arquivo alertmanager.yml..."
+          cat <<EOF > $USER_HOME/alertmanager.yml
+          global:
+            smtp_smarthost: 'smtp.example.com:587'
+            smtp_from: 'alertmanager@example.com'
+            smtp_auth_username: 'your-username'
+            smtp_auth_password: 'your-password'
+            resolve_timeout: 5m
+
+          route:
+            receiver: 'default-receiver'
+            group_wait: 10s
+            group_interval: 10s
+            repeat_interval: 1h
+
+          receivers:
+            - name: 'default-receiver'
+              email_configs:
+                - to: 'your-email@example.com'
+
+          inhibit_rules:
+            - source_match:
+                severity: 'critical'
+              target_match:
+                severity: 'warning'
+              equal: ['alertname', 'dev', 'instance']
+          EOF
+          echo "Arquivo alertmanager.yml criado."
+
+          # Criar o arquivo alert_rules.yml
+          echo "Criando arquivo alert_rules.yml..."
+          cat <<EOF > $USER_HOME/alert_rules.yml
+          groups:
+          - name: example
+            rules:
+            - alert: HighCpuUsage
+              expr: avg by (instance) (rate(node_cpu_seconds_total{mode!="idle"}[1m])) > 0.8
+              for: 1m
+              labels:
+                severity: critical
+              annotations:
+                summary: "High CPU usage detected on instance {{ $labels.instance }}"
+                description: "CPU usage is above 80% on instance {{ $labels.instance }}."
+          EOF
+          echo "Arquivo alert_rules.yml criado."
+
           # Alterar permissões dos arquivos criados
           sudo chown ec2-user:ec2-user $USER_HOME/docker-compose.yml
           sudo chown ec2-user:ec2-user $USER_HOME/prometheus.yml
+          sudo chown ec2-user:ec2-user $USER_HOME/alertmanager.yml
+          sudo chown ec2-user:ec2-user $USER_HOME/alert_rules.yml
 
           # Iniciar os serviços com Docker Compose
           echo "Iniciando os serviços com Docker Compose..."
@@ -157,7 +256,7 @@ Resources:
           echo "Serviços iniciados com Docker Compose."
           } &> $LOGFILE
 
-          echo "Instalação e configuração concluídas. Veja o log em $LOGFILE"
+          echo "Instalação e configuração concluida"
 ```
 
 ### 2. Alterar o ID do VPC e Subnet
