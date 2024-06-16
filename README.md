@@ -232,13 +232,13 @@ Neste artigo, vamos descrever o passo a passo para criar uma instância EC2 na A
              - name: example
                rules:
                - alert: HighCpuUsage
-                 expr: avg by (instance) (rate(node_cpu_seconds_total{mode!="idle"}[1m])) > 0.8
+                 expr: 100 - (sum by (instance) (rate(node_cpu_seconds_total{mode!="idle"}[1m]))) > 50
                  for: 1m
                  labels:
                    severity: critical
                  annotations:
                    summary: "High CPU usage detected on instance {{ $labels.instance }}"
-                   description: "CPU usage is above 80% on instance {{ $labels.instance }}."
+                   description: "CPU usage is above 50% on instance {{ $labels.instance }}."
              EOF
              echo "Arquivo alert_rules.yml criado."
 
